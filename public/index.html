@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Herma Rewind - Sesli Sipariş Takibi</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <div class="logo">HERMA REWIND</div>
+            <div class="status-indicators">
+                <div id="status-badge" class="badge idle">HAZIR</div>
+                <div id="listening-indicator" class="listening-indicator hidden">
+                    <span></span><span></span><span></span>
+                </div>
+            </div>
+            <button id="toggle-listen" class="btn-primary">DİNLEMEYİ BAŞLAT</button>
+        </header>
+
+        <main>
+            <section class="order-columns">
+                <!-- Hazırlanıyor (Orange) -->
+                <div class="column orange" id="col-20">
+                    <h2>Hazırlanıyor</h2>
+                    <div class="order-list" id="list-20"></div>
+                </div>
+
+                <!-- Hazır (Green) -->
+                <div class="column green" id="col-30">
+                    <h2>Hazır</h2>
+                    <div class="order-list" id="list-30"></div>
+                </div>
+
+                <!-- Teslim Edildi (Blue) -->
+                <div class="column blue" id="col-40">
+                    <h2>Teslim Edildi</h2>
+                    <div class="order-list" id="list-40"></div>
+                </div>
+            </section>
+
+            <aside class="logs-panel">
+                <div class="log-header">
+                    <h3>ETKİNLİK GÜNLÜĞÜ</h3>
+                    <div id="speech-api-status" class="api-status">API: Web Speech</div>
+                </div>
+                <div id="logs" class="logs-container">
+                    <div class="log-entry system">Sistem başlatıldı. Dinlemeye hazır.</div>
+                </div>
+                <div class="current-speech">
+                    <div class="label">NE ANLADIM?</div>
+                    <div id="understood-text" class="text-placeholder">... Mikrofonu açmak için butona basın ...</div>
+                    <div id="confidence-score" class="confidence hidden">Güven: 0%</div>
+                </div>
+            </aside>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
