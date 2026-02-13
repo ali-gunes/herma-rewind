@@ -87,11 +87,15 @@ app.post('/api/orders/update-local', async (req, res) => {
         const externalUrl = `${process.env.UPDATE_STATUS_BASE_URL}/update-status`;
         console.log(`[External Update] Calling ${externalUrl} for order ${id}`);
 
-        // The requirement says: {"status": 30, "kdsOrderId":"A-123"}
-        await axios.post(externalUrl, {
+        const payload = {
             status: statusCode,
             kdsOrderId: id
-        });
+        };
+
+        console.log(`[External Update] Calling ${externalUrl} with payload:`, JSON.stringify(payload, null, 2));
+
+        // The requirement says: {"status": 30, "kdsOrderId":"A-123"}
+        await axios.post(externalUrl, payload);
         console.log(`[External Update] Success for order ${id}`);
     } catch (error) {
         console.error(`[External Update] Failed for order ${id}:`, error.message);
