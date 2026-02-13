@@ -74,7 +74,7 @@ app.post('/api/orders/update-local', async (req, res) => {
 
     // Call the external update-status service
     try {
-        const externalUrl = `${process.env.UPDATE_STATUS_BASE_URL}`;
+        const externalUrl = `${process.env.UPDATE_STATUS_BASE_URL}/update-status`;
         console.log(`[External Update] Calling ${externalUrl} for order ${id}`);
 
         // The requirement says: {"status": 30, "kdsOrderId":"A-123"}
@@ -101,7 +101,7 @@ app.post('/api/listen/toggle', (req, res) => {
 });
 
 // Mock external update-status service for testing if needed
-app.post('/api/mock-update', (req, res) => {
+app.post('/update-status', (req, res) => {
     console.log('[Mock External API] Received update:', req.body);
     res.json({ success: true });
 });
