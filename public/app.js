@@ -142,7 +142,7 @@ function renderOrders() {
 
 async function updateOrderStatus(id, statusCode) {
     try {
-        const response = await fetch('/api/order/update-local', {
+        const response = await fetch('/api/orders/update-local', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id, statusCode })

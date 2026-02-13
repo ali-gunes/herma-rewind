@@ -27,7 +27,7 @@ app.get('/health', (req, res) => {
 });
 
 // Order Ingest
-app.post('/api/order/ingest', (req, res) => {
+app.post('/api/orders/ingest', (req, res) => {
     const { kdsOrderId, orderId } = req.body;
     const id = kdsOrderId || orderId;
 
@@ -58,7 +58,7 @@ app.post('/api/order/ingest', (req, res) => {
 });
 
 // Update Status (matches the speech-to-text logic requirement)
-app.post('/api/order/update-local', async (req, res) => {
+app.post('/api/orders/update-local', async (req, res) => {
     const { id, statusCode } = req.body;
 
     if (!orders[id]) {
@@ -76,7 +76,7 @@ app.post('/api/order/update-local', async (req, res) => {
     try {
         const externalUrl = `${process.env.UPDATE_STATUS_BASE_URL}`;
         console.log(`[External Update] Calling ${externalUrl} for order ${id}`);
-        
+
         // The requirement says: {"status": 30, "kdsOrderId":"A-123"}
         await axios.post(externalUrl, {
             status: statusCode,

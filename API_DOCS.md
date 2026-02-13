@@ -10,7 +10,7 @@ Default: `http://localhost:3000`
 ### 1. Ingest New Order
 Receives a new order and saves it with initial status code 20 (Hazırlanıyor).
 
-- **URL**: `/api/order/ingest`
+- **URL**: `/api/orders/ingest`
 - **Method**: `POST`
 - **Headers**: `Content-Type: application/json`
 - **Body Options**:
@@ -39,7 +39,7 @@ Receives a new order and saves it with initial status code 20 (Hazırlanıyor).
 ### 2. Update Order Status (Internal/Frontend)
 Used by the frontend to trigger status updates after speech recognition.
 
-- **URL**: `/api/order/update-local`
+- **URL**: `/api/orders/update-local`
 - **Method**: `POST`
 - **Body**:
     ```json
