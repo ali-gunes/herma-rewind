@@ -11,6 +11,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Global Request Logger
+app.use((req, res, next) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] ${req.method} ${req.url}`);
+    if (Object.keys(req.body).length > 0) {
+        console.log(`[Payload]:`, JSON.stringify(req.body, null, 2));
+    }
+    next();
+});
+
 // In-memory data structure
 // { orderId: { id, status, statusCode, createdAt, updatedAt } }
 let orders = {};
