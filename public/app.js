@@ -79,13 +79,11 @@ if (SpeechRecognition) {
     };
 
     recognition.onend = () => {
-        // If it ends naturally but we're still in "listening" state logic-wise, 
-        // the toggle button would need to be clicked again or we auto-restart.
-        // The requirement says toggle state triggers it.
-        if (isListening) {
-            // recognition.start(); // Auto-restart if we want continuous, but toggle is the key here.
-        }
+        // Recognition naturally ends after speech detection in non-continuous mode
+        // We sync our internal state and UI
+        isListening = false;
         updateUIState();
+        addLog('Dinleme sona erdi.', 'system');
     };
 } else {
     addLog('Web Speech API bu tarayıcıda desteklenmiyor.', 'error');
@@ -113,7 +111,7 @@ function updateUIState() {
         badge.innerText = 'HAZIR';
         badge.className = 'badge idle';
         indicator.classList.add('hidden');
-        confidenceScore.classList.add('hidden');
+        // We don't hide confidence score here so last score remains visible
     }
 }
 
@@ -176,64 +174,73 @@ function processTranscript(text, confidence) {
     confidenceScore.classList.remove('hidden');
 
     // Clean text and handle Turkish number words
-    let words = text.split(' ');
+    let words = text.split(/\s+/);
     let processedWords = words.map(word => {
-        // Handle numbers spoken as words
         if (numberMap[word]) return numberMap[word];
-        // Handle alpha variations (Ankara -> A)
         if (alphaMap[word]) return alphaMap[word];
         return word;
     });
 
-    // Detect target status and order IDs
-    // Example: "1001 1002 hazır 1003 teslim"
     let commandGroups = [];
     let currentIds = [];
 
     processedWords.forEach(word => {
-        // Is it a variation for "Hazır" (30)?
         if (variations.prepared.some(v => word.includes(v))) {
             if (currentIds.length > 0) {
                 commandGroups.push({ ids: [...currentIds], status: statusCodes.prepared });
                 currentIds = [];
             }
         }
-        // Is it a variation for "Teslim" (40)?
         else if (variations.delivered.some(v => word.includes(v))) {
             if (currentIds.length > 0) {
                 commandGroups.push({ ids: [...currentIds], status: statusCodes.delivered });
                 currentIds = [];
             }
         }
-        // Is it an ID? (contains digits or matches an existing order starting character)
-        else if (/\d/.test(word) || word.length === 1 || orders.some(o => o.id.startsWith(word.toUpperCase()))) {
-            // Join parts if it's "A 1017" or similar
-            let id = word.toUpperCase();
-            // Simple heuristic for alpha-numeric pairs like "A" then "1017"
-            if (currentIds.length > 0 && currentIds[currentIds.length - 1].length === 1 && !/\d/.test(currentIds[currentIds.length - 1])) {
-                currentIds[currentIds.length - 1] += `-${id}`;
-            } else {
-                currentIds.push(id);
+        else {
+            // Extract numerical part or potential ID
+            let match = word.match(/\d+/);
+            if (match) {
+                currentIds.push(match[0]);
+            } else if (word.length === 1 && /[A-Z]/i.test(word)) {
+                // Potential prefix, wait for next word?
+                currentIds.push(word.toUpperCase());
+            } else if (alphaMap[word.toLowerCase()]) {
+                currentIds.push(alphaMap[word.toLowerCase()]);
             }
         }
     });
 
-    if (commandGroups.length === 0) {
-        // Check if any loose IDs were at the end without a trailing status word
-        // The requirement says "1001 1002 hazır" - the status word comes after.
-        // Handle "Ankara 1017 hazır" -> "A-1017 hazır"
+    if (commandGroups.length === 0 && currentIds.length > 0) {
+        // Handle cases where status might be missing or ID extraction was loose
         speak("Anlayamadım");
     } else {
         commandGroups.forEach(group => {
-            group.ids.forEach(id => {
-                // Try exact match or dash variations
-                let matchedOrder = orders.find(o => o.id === id || o.id === id.replace(' ', '-') || o.id === id.replace(/([A-Z])(\d+)/, '$1-$2'));
-                if (matchedOrder) {
-                    updateOrderStatus(matchedOrder.id, group.status);
+            group.ids.forEach(spokenId => {
+                // FUZZY MATCHING LOGIC
+                // 1. Exact match
+                let targetOrder = orders.find(o => o.id.toUpperCase() === spokenId.toUpperCase());
+
+                // 2. Dash variation (e.g. "A1017" spoken vs "A-1017" in system)
+                if (!targetOrder) {
+                    targetOrder = orders.find(o => o.id.replace('-', '').toUpperCase() === spokenId.toUpperCase());
+                }
+
+                // 3. Prefix/Combination (e.g. "A" then "1017" -> "A-1017")
+                // Handled partially by extraction, but let's try numerical match
+                if (!targetOrder) {
+                    // Search for any order whose numeric part matches the spokenId
+                    targetOrder = orders.find(o => {
+                        let orderNumeric = o.id.match(/\d+/);
+                        return orderNumeric && orderNumeric[0] === spokenId;
+                    });
+                }
+
+                if (targetOrder) {
+                    updateOrderStatus(targetOrder.id, group.status);
                 } else {
-                    // Try one more: maybe the ID in the system is A-1017 and user said A 1017
-                    let fallbackId = id.includes('-') ? id : (id.length > 1 && !id.includes('-') && isNaN(id) ? id.replace(/([A-Z])(\d+)/, '$1-$2') : id);
-                    updateOrderStatus(fallbackId, group.status);
+                    addLog(`Eşleşme bulunamadı: ${spokenId}`, 'error');
+                    speak("Anlayamadım");
                 }
             });
         });
