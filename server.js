@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
+const { GlobalKeyboardListener } = require('node-global-key-listener');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -113,6 +114,69 @@ app.post('/api/listen/toggle', (req, res) => {
     console.log(`[Listen Toggle] State changed to: ${isListening ? 'LISTENING' : 'IDLE'}`);
     res.json({ isListening });
 });
+
+// --- SSE (Server-Sent Events) for pushing media key events to the browser ---
+const sseClients = new Set();
+
+app.get('/api/events', (req, res) => {
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+    });
+
+    // Send initial connection confirmation
+    res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+    sseClients.add(res);
+    console.log(`[SSE] Client connected. Total clients: ${sseClients.size}`);
+
+    req.on('close', () => {
+        sseClients.delete(res);
+        console.log(`[SSE] Client disconnected. Total clients: ${sseClients.size}`);
+    });
+});
+
+function broadcastSSE(data) {
+    const message = `data: ${JSON.stringify(data)}\n\n`;
+    for (const client of sseClients) {
+        client.write(message);
+    }
+}
+
+// --- Global Media Key Listener ---
+// Guard against async crashes from node-global-key-listener's sudo-prompt dependency
+// (sudo-prompt uses the removed util.isObject on Node.js v24+)
+const originalListeners = process.listeners('uncaughtException');
+process.on('uncaughtException', (err) => {
+    if (err.message && err.message.includes('isObject')) {
+        console.warn('[Media Key] Suppressed sudo-prompt compatibility error (harmless on modern Node.js)');
+        return; // Swallow this specific error
+    }
+    // Re-throw anything else to default handlers
+    originalListeners.forEach(listener => listener(err));
+    if (originalListeners.length === 0) {
+        console.error('Uncaught Exception:', err);
+        process.exit(1);
+    }
+});
+
+try {
+    const gkl = new GlobalKeyboardListener();
+
+    gkl.addListener((e, down) => {
+        // Only react to key DOWN events for MEDIA_PLAY_PAUSE
+        if (e.name === 'MEDIA_PLAY_PAUSE' && e.state === 'DOWN') {
+            isListening = !isListening;
+            console.log(`[Media Key] Play/Pause pressed. State: ${isListening ? 'LISTENING' : 'IDLE'}`);
+            broadcastSSE({ type: 'toggle', isListening });
+        }
+    });
+
+    console.log('[Media Key] Global key listener started \u2014 listening for MEDIA_PLAY_PAUSE');
+} catch (err) {
+    console.error('[Media Key] Failed to start global key listener:', err.message);
+    console.error('[Media Key] Media key control will not be available.');
+}
 
 // Mock external update-status service for testing if needed
 app.post('/update-status', (req, res) => {

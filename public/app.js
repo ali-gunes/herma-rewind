@@ -116,11 +116,6 @@ function updateUIState() {
         indicator.classList.add('hidden');
         // We don't hide confidence score here so last score remains visible
     }
-
-    // Sync Media Session playback state with listening state
-    if ('mediaSession' in navigator) {
-        navigator.mediaSession.playbackState = isListening ? 'playing' : 'paused';
-    }
 }
 
 async function fetchOrders() {
@@ -271,52 +266,18 @@ async function toggleListening() {
     }
 }
 
-// --- Media Session API (Headset / Media Key Support) ---
+// --- Headset / Media Key Support (via Server-Sent Events) ---
+// The server captures OS-level media key events (MEDIA_PLAY_PAUSE) using
+// node-global-key-listener and pushes them to us via SSE.
 
-// Generate a tiny silent WAV as a base64 data URI.
-// This is needed because the browser only routes hardware media keys
-// to a page that has an active <audio> or <video> element.
-function createSilentAudio() {
-    // Minimal WAV: 44-byte header + 2 bytes of silence (1 sample, mono, 8-bit, 8kHz)
-    const header = new Uint8Array([
-        0x52,0x49,0x46,0x46, // "RIFF"
-        0x26,0x00,0x00,0x00, // file size - 8 = 38
-        0x57,0x41,0x56,0x45, // "WAVE"
-        0x66,0x6D,0x74,0x20, // "fmt "
-        0x10,0x00,0x00,0x00, // chunk size = 16
-        0x01,0x00,            // PCM format
-        0x01,0x00,            // 1 channel
-        0x40,0x1F,0x00,0x00, // sample rate = 8000
-        0x40,0x1F,0x00,0x00, // byte rate = 8000
-        0x01,0x00,            // block align = 1
-        0x08,0x00,            // bits per sample = 8
-        0x64,0x61,0x74,0x61, // "data"
-        0x02,0x00,0x00,0x00, // data size = 2 bytes
-        0x80,0x80             // 2 silent samples (128 = silence for 8-bit unsigned PCM)
-    ]);
-
-    const blob = new Blob([header], { type: 'audio/wav' });
-    const url = URL.createObjectURL(blob);
-
-    const audio = new Audio(url);
-    audio.loop = true;
-    audio.volume = 0; // extra safety: volume at 0
-    return audio;
-}
-
-let silentAudio = null;
+let eventSource = null;
 
 function enableHeadsetControl() {
     if (isHeadsetEnabled) return;
-    if (!('mediaSession' in navigator)) {
-        addLog('Media Session API desteklenmiyor.', 'error');
-        return;
-    }
 
-    silentAudio = createSilentAudio();
+    eventSource = new EventSource('/api/events');
 
-    // Play the silent audio to claim the media session (requires user gesture)
-    silentAudio.play().then(() => {
+    eventSource.onopen = () => {
         isHeadsetEnabled = true;
 
         // Update headset button UI
@@ -326,31 +287,41 @@ function enableHeadsetControl() {
         headsetBadge.classList.remove('hidden');
         headsetBadge.classList.add('active');
 
-        // Set metadata so the OS shows something meaningful
-        navigator.mediaSession.metadata = new MediaMetadata({
-            title: 'Herma Rewind',
-            artist: 'Sesli Sipariş Takibi',
-            album: 'Dinleme Kontrolü'
-        });
+        addLog('🎧 Kulaklık kontrolü etkinleştirildi (sunucu bağlantısı).', 'match');
+    };
 
-        // Register play/pause handlers
-        navigator.mediaSession.setActionHandler('play', () => {
-            addLog('▶ Kulaklık: Dinleme başlatılıyor...', 'system');
-            if (!isListening) toggleListening();
-        });
+    eventSource.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
 
-        navigator.mediaSession.setActionHandler('pause', () => {
-            addLog('⏸ Kulaklık: Dinleme durduruluyor...', 'system');
-            if (isListening) toggleListening();
-        });
+            if (data.type === 'connected') {
+                console.log('[SSE] Connected to server event stream');
+                return;
+            }
 
-        // Sync initial state
-        navigator.mediaSession.playbackState = isListening ? 'playing' : 'paused';
+            if (data.type === 'toggle') {
+                addLog(`🎧 Kulaklık: ${data.isListening ? 'Dinleme başlatılıyor...' : 'Dinleme durduruluyor...'}`, 'system');
 
-        addLog('🎧 Kulaklık kontrolü etkinleştirildi.', 'match');
-    }).catch(err => {
-        addLog(`Kulaklık kontrolü başlatılamadı: ${err.message}`, 'error');
-    });
+                // The server already toggled isListening, so we just need to
+                // start/stop recognition to match the server state.
+                if (data.isListening) {
+                    recognition.start();
+                    isListening = true;
+                } else {
+                    recognition.stop();
+                    isListening = false;
+                }
+                updateUIState();
+            }
+        } catch (err) {
+            console.error('[SSE] Parse error:', err);
+        }
+    };
+
+    eventSource.onerror = () => {
+        addLog('🎧 Sunucu bağlantısı kesildi. Yeniden bağlanılıyor...', 'error');
+        // EventSource will automatically try to reconnect
+    };
 }
 
 // Event Listeners

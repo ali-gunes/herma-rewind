@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "start": "node server.js",
+    "postinstall": "node -e \"const p=require('path');const fs=require('fs');const f=p.join(__dirname,'node_modules','node-global-key-listener','bin','MacKeyServer');try{fs.chmodSync(f,0o755)}catch(e){}\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -22,6 +24,7 @@
     "axios": "^1.13.5",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "node-global-key-listener": "^0.3.0"
   }
 }
