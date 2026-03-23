@@ -1,5 +1,7 @@
 // DOM Elements
 const btnToggle = document.getElementById('toggle-listen');
+const btnHeadset = document.getElementById('enable-headset');
+const headsetBadge = document.getElementById('headset-badge');
 const badge = document.getElementById('status-badge');
 const indicator = document.getElementById('listening-indicator');
 const understoodText = document.getElementById('understood-text');
@@ -13,6 +15,7 @@ const lists = {
 
 // Configuration & State
 let isListening = false;
+let isHeadsetEnabled = false;
 let orders = [];
 const statusCodes = {
     preparing: 20,
@@ -112,6 +115,11 @@ function updateUIState() {
         badge.className = 'badge idle';
         indicator.classList.add('hidden');
         // We don't hide confidence score here so last score remains visible
+    }
+
+    // Sync Media Session playback state with listening state
+    if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = isListening ? 'playing' : 'paused';
     }
 }
 
@@ -247,8 +255,8 @@ function processTranscript(text, confidence) {
     }
 }
 
-// Event Listeners
-btnToggle.addEventListener('click', async () => {
+// Shared toggle function (used by both the UI button and media key handlers)
+async function toggleListening() {
     try {
         const response = await fetch('/api/listen/toggle', { method: 'POST' });
         const data = await response.json();
@@ -261,7 +269,93 @@ btnToggle.addEventListener('click', async () => {
     } catch (err) {
         console.error('Toggle error:', err);
     }
-});
+}
+
+// --- Media Session API (Headset / Media Key Support) ---
+
+// Generate a tiny silent WAV as a base64 data URI.
+// This is needed because the browser only routes hardware media keys
+// to a page that has an active <audio> or <video> element.
+function createSilentAudio() {
+    // Minimal WAV: 44-byte header + 2 bytes of silence (1 sample, mono, 8-bit, 8kHz)
+    const header = new Uint8Array([
+        0x52,0x49,0x46,0x46, // "RIFF"
+        0x26,0x00,0x00,0x00, // file size - 8 = 38
+        0x57,0x41,0x56,0x45, // "WAVE"
+        0x66,0x6D,0x74,0x20, // "fmt "
+        0x10,0x00,0x00,0x00, // chunk size = 16
+        0x01,0x00,            // PCM format
+        0x01,0x00,            // 1 channel
+        0x40,0x1F,0x00,0x00, // sample rate = 8000
+        0x40,0x1F,0x00,0x00, // byte rate = 8000
+        0x01,0x00,            // block align = 1
+        0x08,0x00,            // bits per sample = 8
+        0x64,0x61,0x74,0x61, // "data"
+        0x02,0x00,0x00,0x00, // data size = 2 bytes
+        0x80,0x80             // 2 silent samples (128 = silence for 8-bit unsigned PCM)
+    ]);
+
+    const blob = new Blob([header], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+
+    const audio = new Audio(url);
+    audio.loop = true;
+    audio.volume = 0; // extra safety: volume at 0
+    return audio;
+}
+
+let silentAudio = null;
+
+function enableHeadsetControl() {
+    if (isHeadsetEnabled) return;
+    if (!('mediaSession' in navigator)) {
+        addLog('Media Session API desteklenmiyor.', 'error');
+        return;
+    }
+
+    silentAudio = createSilentAudio();
+
+    // Play the silent audio to claim the media session (requires user gesture)
+    silentAudio.play().then(() => {
+        isHeadsetEnabled = true;
+
+        // Update headset button UI
+        btnHeadset.innerText = '🎧 Kulaklık Aktif';
+        btnHeadset.classList.add('active');
+        headsetBadge.innerText = 'KULAKLK AKTİF';
+        headsetBadge.classList.remove('hidden');
+        headsetBadge.classList.add('active');
+
+        // Set metadata so the OS shows something meaningful
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: 'Herma Rewind',
+            artist: 'Sesli Sipariş Takibi',
+            album: 'Dinleme Kontrolü'
+        });
+
+        // Register play/pause handlers
+        navigator.mediaSession.setActionHandler('play', () => {
+            addLog('▶ Kulaklık: Dinleme başlatılıyor...', 'system');
+            if (!isListening) toggleListening();
+        });
+
+        navigator.mediaSession.setActionHandler('pause', () => {
+            addLog('⏸ Kulaklık: Dinleme durduruluyor...', 'system');
+            if (isListening) toggleListening();
+        });
+
+        // Sync initial state
+        navigator.mediaSession.playbackState = isListening ? 'playing' : 'paused';
+
+        addLog('🎧 Kulaklık kontrolü etkinleştirildi.', 'match');
+    }).catch(err => {
+        addLog(`Kulaklık kontrolü başlatılamadı: ${err.message}`, 'error');
+    });
+}
+
+// Event Listeners
+btnToggle.addEventListener('click', toggleListening);
+btnHeadset.addEventListener('click', enableHeadsetControl);
 
 // Polling for new orders (since we don't have WebSockets setup for this simple task)
 setInterval(fetchOrders, 3000);
