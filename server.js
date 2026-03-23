@@ -164,15 +164,26 @@ try {
     const gkl = new GlobalKeyboardListener();
 
     gkl.addListener((e, down) => {
-        // Only react to key DOWN events for MEDIA_PLAY_PAUSE
-        if (e.name === 'MEDIA_PLAY_PAUSE' && e.state === 'DOWN') {
+        // DEBUG: Log ALL key events to find the correct key name
+        if (e.state === 'DOWN') {
+            console.log(`[Media Key DEBUG] Key event: name="${e.name}" vKey=${e.vKey} rawKey=${JSON.stringify(e.rawKey)} state=${e.state}`);
+        }
+
+        // React to media play/pause key
+        if (e.state === 'DOWN' && (
+            e.name === 'MEDIA_PLAY_PAUSE' ||
+            e.vKey === 0xB3 ||           // VK_MEDIA_PLAY_PAUSE on Windows
+            e.vKey === 1000 ||            // Common macOS media key code
+            (e.rawKey && e.rawKey.standardName === 'MEDIA_PLAY_PAUSE')
+        )) {
             isListening = !isListening;
-            console.log(`[Media Key] Play/Pause pressed. State: ${isListening ? 'LISTENING' : 'IDLE'}`);
+            console.log(`[Media Key] Play/Pause detected! State: ${isListening ? 'LISTENING' : 'IDLE'}`);
             broadcastSSE({ type: 'toggle', isListening });
         }
     });
 
     console.log('[Media Key] Global key listener started \u2014 listening for MEDIA_PLAY_PAUSE');
+    console.log('[Media Key] DEBUG MODE: Logging ALL key events. Press any key to verify the listener works.');
 } catch (err) {
     console.error('[Media Key] Failed to start global key listener:', err.message);
     console.error('[Media Key] Media key control will not be available.');
