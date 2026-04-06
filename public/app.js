@@ -12,8 +12,15 @@ const lists = {
 };
 
 // Configuration & State
-let isListening = false;
+const STATES = {
+    IDLE: 'idle',
+    PASSIVE: 'passive',
+    ACTIVE: 'active'
+};
+
+let currentState = STATES.IDLE;
 let orders = [];
+let activeTimer = null;
 const statusCodes = {
     preparing: 20,
     prepared: 30,
@@ -39,6 +46,37 @@ const alphaMap = {
     'ankara': 'A', 'bursa': 'B', 'ceyhan': 'C', 'denizli': 'D'
 };
 
+// Wake Word Variations (ordered by specificity)
+const wakeWords = [
+    'sipariş', 'siparis', 'hey herma', 'hey harma', 'hey arma', 'hey erma',
+    'ey herma', 'ey harma', 'ey arma', 'ey erma',
+    'selam herma', 'tamam herma', 'hey helma',
+    'herma', 'harma', 'arma', 'erma'
+];
+
+// Audio Context for Chime
+let audioCtx = null;
+function playChime() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+    osc.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.1); // E6
+
+    gain.gain.setValueAtTime(0, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.05);
+    gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.3);
+}
+
 // Speech Recognition Initialization
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition;
@@ -46,13 +84,12 @@ let recognition;
 if (SpeechRecognition) {
     recognition = new SpeechRecognition();
     recognition.lang = 'tr-TR';
-    recognition.continuous = false; // We start/stop per toggle requirement
+    recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onstart = () => {
-        isListening = true;
+        addLog(`Sistem ${currentState.toUpperCase()} modunda.`, 'system');
         updateUIState();
-        addLog('Dinleme başlatıldı...', 'speech');
     };
 
     recognition.onresult = (event) => {
@@ -60,34 +97,107 @@ if (SpeechRecognition) {
         let finalTranscript = '';
 
         for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-                finalTranscript += event.results[i][0].transcript;
-                processTranscript(finalTranscript.toLowerCase(), event.results[i][0].confidence);
+            const transcript = event.results[i][0].transcript.toLowerCase().trim();
+            const isFinal = event.results[i].isFinal;
+
+            if (isFinal) {
+                finalTranscript = transcript;
+                console.log(`[Final] ${finalTranscript}`);
+
+                if (currentState === STATES.PASSIVE) {
+                    const remainder = checkWakeWord(finalTranscript);
+                    if (remainder && remainder.length > 0) {
+                        addLog(`Hızlı Komut: "${remainder}"`, 'speech');
+                        processTranscript(remainder, event.results[i][0].confidence);
+                        transitionTo(STATES.PASSIVE);
+                    }
+                } else if (currentState === STATES.ACTIVE) {
+                    // Check if this final transcript is just the wake word that triggered us
+                    const isJustWakeWord = wakeWords.some(ww => transcript === ww);
+                    if (isJustWakeWord) {
+                        console.log(`[Active] Wake word ignored in active mode.`);
+                    } else {
+                        processTranscript(finalTranscript, event.results[i][0].confidence);
+                        transitionTo(STATES.PASSIVE);
+                    }
+                }
             } else {
-                interimTranscript += event.results[i][0].transcript;
+                interimTranscript = transcript;
+                if (currentState === STATES.PASSIVE) {
+                    checkWakeWord(interimTranscript);
+                }
             }
         }
 
-        understoodText.innerText = finalTranscript || interimTranscript;
+        understoodText.innerText = finalTranscript || interimTranscript || (currentState === STATES.PASSIVE ? '...' : 'Dinliyorum...');
         understoodText.classList.remove('text-placeholder');
     };
 
     recognition.onerror = (event) => {
-        addLog(`Hata: ${event.error}`, 'error');
-        isListening = false;
-        updateUIState();
+        if (event.error === 'not-allowed') {
+            addLog('Mikrofon erişimi engellendi. Lütfen izin verin.', 'error');
+            transitionTo(STATES.IDLE);
+        } else if (event.error !== 'no-speech') {
+            addLog(`Hata: ${event.error}`, 'error');
+        }
     };
 
     recognition.onend = () => {
-        // Recognition naturally ends after speech detection in non-continuous mode
-        // We sync our internal state and UI
-        isListening = false;
-        updateUIState();
-        addLog('Dinleme sona erdi.', 'system');
+        // Auto-restart if we are supposed to be listening
+        if (currentState !== STATES.IDLE) {
+            try {
+                recognition.start();
+            } catch (e) {
+                // Already started or other error
+            }
+        } else {
+            updateUIState();
+            addLog('Dinleme durduruldu.', 'system');
+        }
     };
 } else {
     addLog('Web Speech API bu tarayıcıda desteklenmiyor.', 'error');
     btnToggle.disabled = true;
+}
+
+function checkWakeWord(text) {
+    for (const ww of wakeWords) {
+        if (text.includes(ww)) {
+            const index = text.indexOf(ww);
+            const remainder = text.substring(index + ww.length).trim();
+            addLog(`Uyandırma kelimesi algılandı: "${ww}"`, 'match');
+            transitionTo(STATES.ACTIVE);
+            return remainder;
+        }
+    }
+    return null;
+}
+
+function transitionTo(newState) {
+    if (currentState === newState) return;
+
+    console.log(`[State Transition] ${currentState} -> ${newState}`);
+    addLog(`Durum: ${newState.toUpperCase()}`, 'system');
+
+    // Cleanup old state
+    if (activeTimer) {
+        clearTimeout(activeTimer);
+        activeTimer = null;
+    }
+
+    currentState = newState;
+    updateUIState();
+
+    if (newState === STATES.ACTIVE) {
+        playChime();
+        // Set timeout to go back to passive if no command received
+        activeTimer = setTimeout(() => {
+            if (currentState === STATES.ACTIVE) {
+                addLog('Zaman aşımı: Komut alınamadı.', 'system');
+                transitionTo(STATES.PASSIVE);
+            }
+        }, 7000); // 7 seconds timeout
+    }
 }
 
 // Functions
@@ -100,18 +210,27 @@ function addLog(message, type = 'system') {
 }
 
 function updateUIState() {
-    if (isListening) {
+    badge.className = 'badge';
+
+    if (currentState === STATES.IDLE) {
+        btnToggle.innerText = 'DİNLEMEYİ BAŞLAT';
+        badge.innerText = 'KAPALI';
+        badge.classList.add('idle');
+        indicator.classList.add('hidden');
+        understoodText.innerText = '... Mikrofonu açmak için butona basın ...';
+        understoodText.classList.add('text-placeholder');
+    } else if (currentState === STATES.PASSIVE) {
+        btnToggle.innerText = 'DİNLEMEYİ DURDUR';
+        badge.innerText = 'BEKLİYOR (Hey Herma)';
+        badge.classList.add('passive');
+        indicator.classList.add('hidden');
+        understoodText.innerText = 'Sizi dinliyorum... ("Hey Herma" deyin)';
+        understoodText.classList.add('text-placeholder');
+    } else if (currentState === STATES.ACTIVE) {
         btnToggle.innerText = 'DİNLEMEYİ DURDUR';
         badge.innerText = 'DİNLİYOR...';
-        badge.className = 'badge listening';
+        badge.classList.add('active');
         indicator.classList.remove('hidden');
-        understoodText.classList.remove('text-placeholder');
-    } else {
-        btnToggle.innerText = 'DİNLEMEYİ BAŞLAT';
-        badge.innerText = 'HAZIR';
-        badge.className = 'badge idle';
-        indicator.classList.add('hidden');
-        // We don't hide confidence score here so last score remains visible
     }
 }
 
@@ -169,7 +288,22 @@ function speak(text) {
 
 // Transcript Processing Logic
 function processTranscript(text, confidence) {
-    addLog(`Anlaşılan: "${text}"`, 'speech');
+    console.log(`[Process] Input: "${text}"`);
+
+    // Strip any leading wake word if present, starting from longest
+    let cleanText = text;
+    [...wakeWords].sort((a, b) => b.length - a.length).forEach(ww => {
+        if (cleanText.startsWith(ww)) {
+            cleanText = cleanText.replace(ww, '').trim();
+        }
+    });
+
+    if (!cleanText) {
+        console.log(`[Process] Empty after stripping.`);
+        return;
+    }
+
+    addLog(`Komut: "${cleanText}"`, 'speech');
     confidenceScore.innerText = `Güven: ${Math.round(confidence * 100)}%`;
     confidenceScore.classList.remove('hidden');
 
@@ -249,19 +383,54 @@ function processTranscript(text, confidence) {
 
 // Event Listeners
 btnToggle.addEventListener('click', async () => {
-    try {
-        const response = await fetch('/api/listen/toggle', { method: 'POST' });
-        const data = await response.json();
+    if (currentState === STATES.IDLE) {
+        // Initialize AudioContext on first interaction
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
 
-        if (data.isListening) {
+        transitionTo(STATES.PASSIVE);
+        try {
             recognition.start();
-        } else {
-            recognition.stop();
+        } catch (e) {
+            console.log('Recognition already started');
         }
-    } catch (err) {
-        console.error('Toggle error:', err);
+    } else {
+        transitionTo(STATES.IDLE);
+        recognition.stop();
     }
+
+    // Notify server (optional, keeping for log consistency)
+    fetch('/api/listen/toggle', { method: 'POST' }).catch(err => console.error(err));
 });
+
+// Auto-start attempt on load (might be blocked by browser)
+window.addEventListener('DOMContentLoaded', () => {
+    addLog('Herma Rewind Başlatıldı. Wake-word için butona basın.');
+    // We can't start mic without interaction, but we can try to resume if already allowed
+    // For now, we'll wait for the first click on the UI.
+});
+
+// Global interaction listener to unlock AudioContext and start recognition
+window.addEventListener('click', () => {
+    if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+
+    // Auto-start if IDLE
+    if (currentState === STATES.IDLE) {
+        addLog('Etkileşim algılandı. Sesli asistan başlatılıyor...', 'system');
+
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        transitionTo(STATES.PASSIVE);
+        try {
+            recognition.start();
+        } catch (e) {
+            console.log('Recognition already started');
+        }
+    }
+}, { once: true });
 
 // Polling for new orders (since we don't have WebSockets setup for this simple task)
 setInterval(fetchOrders, 3000);

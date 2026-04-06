@@ -14,7 +14,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Global Request Logger
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] ${req.method} ${req.url}`);
+    //console.log(`[${timestamp}] ${req.method} ${req.url}`);
     if (req.body && Object.keys(req.body).length > 0) {
         console.log(`[Payload]:`, JSON.stringify(req.body, null, 2));
     }
