@@ -307,9 +307,12 @@ function processTranscript(text, confidence) {
     confidenceScore.innerText = `Güven: ${Math.round(confidence * 100)}%`;
     confidenceScore.classList.remove('hidden');
 
-    // Clean text and handle Turkish number words
-    let words = text.split(/\s+/);
-    let processedWords = words.map(word => {
+    // Clean text: Handle "1.005" -> "1005" and other STT artifacts
+    let processedText = cleanText.replace(/(\d)\.(\d)/g, '$1$2'); // 1.005 -> 1005
+    processedText = processedText.replace(/[.,?!]/g, ' ').replace(/\s+/g, ' ').trim();
+
+    let words = processedText.split(/\s+/);
+    let mappedTokens = words.map(word => {
         if (numberMap[word]) return numberMap[word];
         if (alphaMap[word]) return alphaMap[word];
         return word;
@@ -318,52 +321,81 @@ function processTranscript(text, confidence) {
     let commandGroups = [];
     let currentIds = [];
 
-    processedWords.forEach(word => {
-        if (variations.prepared.some(v => word.includes(v))) {
+    // Smart Accumulator: Join consecutive digits/letters that likely form one ID
+    let currentIdAccumulator = "";
+
+    mappedTokens.forEach((token, index) => {
+        const isPrepared = variations.prepared.some(v => token.includes(v));
+        const isDelivered = variations.delivered.some(v => token.includes(v));
+        const isStatus = isPrepared || isDelivered;
+
+        if (isStatus) {
+            // If we have an accumulated ID, push it before processing the status
+            if (currentIdAccumulator) {
+                currentIds.push(currentIdAccumulator);
+                currentIdAccumulator = "";
+            }
+
             if (currentIds.length > 0) {
-                commandGroups.push({ ids: [...currentIds], status: statusCodes.prepared });
+                commandGroups.push({ 
+                    ids: [...currentIds], 
+                    status: isPrepared ? statusCodes.prepared : statusCodes.delivered 
+                });
                 currentIds = [];
             }
-        }
-        else if (variations.delivered.some(v => word.includes(v))) {
-            if (currentIds.length > 0) {
-                commandGroups.push({ ids: [...currentIds], status: statusCodes.delivered });
-                currentIds = [];
-            }
-        }
+        } 
         else {
-            // Extract numerical part or potential ID
-            let match = word.match(/\d+/);
-            if (match) {
-                currentIds.push(match[0]);
-            } else if (word.length === 1 && /[A-Z]/i.test(word)) {
-                // Potential prefix, wait for next word?
-                currentIds.push(word.toUpperCase());
-            } else if (alphaMap[word.toLowerCase()]) {
-                currentIds.push(alphaMap[word.toLowerCase()]);
+            // Logic to decide if we should join or start a new ID
+            // 1. If it's a single digit (0-9) or a single letter, it's likely a part of the current ID being built
+            // 2. If it's a multi-digit number, it could be a whole ID or a part
+            let isNumeric = /^\d+$/.test(token);
+            let isSingleChar = token.length === 1;
+
+            if (isNumeric || (isSingleChar && /[a-z]/i.test(token))) {
+                // If the token is a single digit, we always join it to the current build
+                if (token.length === 1 && isNumeric) {
+                    currentIdAccumulator += token;
+                } 
+                // If it's a multi-digit number (like 1005 from "1.005"), it completes any builder or becomes the builder
+                else {
+                    if (currentIdAccumulator) {
+                        currentIdAccumulator += token;
+                    } else {
+                        currentIdAccumulator = token;
+                    }
+                }
+            } 
+            else {
+                // It's some other word, break the accumulator if it exists
+                if (currentIdAccumulator) {
+                    currentIds.push(currentIdAccumulator);
+                    currentIdAccumulator = "";
+                }
             }
         }
     });
 
+    // Final push if something remains
+    if (currentIdAccumulator) currentIds.push(currentIdAccumulator);
+
     if (commandGroups.length === 0 && currentIds.length > 0) {
-        // Handle cases where status might be missing or ID extraction was loose
-        speak("Anlayamadım");
+        // Fallback for cases like "A 101" without "hazır" (if the user stops speaking)
+        // We'll assume the last status was intended or just log it
+        addLog(`Eşleşme bekleniyor: ${currentIds.join(', ')}`, 'system');
     } else {
         commandGroups.forEach(group => {
             group.ids.forEach(spokenId => {
                 // FUZZY MATCHING LOGIC
                 // 1. Exact match
                 let targetOrder = orders.find(o => o.id.toUpperCase() === spokenId.toUpperCase());
-
-                // 2. Dash variation (e.g. "A1017" spoken vs "A-1017" in system)
+                
+                // 2. Dash variation
                 if (!targetOrder) {
                     targetOrder = orders.find(o => o.id.replace('-', '').toUpperCase() === spokenId.toUpperCase());
                 }
 
-                // 3. Prefix/Combination (e.g. "A" then "1017" -> "A-1017")
-                // Handled partially by extraction, but let's try numerical match
+                // 3. Numeric part match
                 if (!targetOrder) {
-                    // Search for any order whose numeric part matches the spokenId
                     targetOrder = orders.find(o => {
                         let orderNumeric = o.id.match(/\d+/);
                         return orderNumeric && orderNumeric[0] === spokenId;
