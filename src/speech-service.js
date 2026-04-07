@@ -11,8 +11,9 @@ const STATE = {
     ACTIVE: 'ACTIVE',    // trigger heard, collecting command (5s window)
 };
 
-// Trigger word variations (covers common Whisper transcription variations)
-const TRIGGER_WORDS = ['sipariş', 'siparis', 'siparış', 'sipariş,', 'siparişi', 'paris', 'pariş', 'paraş'];
+// Regex trigger: matches all Whisper distortions of "sipariş"
+// Covers: sipariş, siparis, siparış, pariş, parış, paris, paraş, siparıs, parş...
+const TRIGGER_REGEX = /\b(si?)?p[ae]?r[ıiae]?[şs]/i;
 
 // How long to wait for a command after trigger (ms)
 const ACTIVE_TIMEOUT_MS = 5000;
@@ -137,16 +138,14 @@ class SpeechService {
     // ─── State Machine ────────────────────────────────────────────────────────
 
     _onSegment(text) {
-        const hasTrigger = TRIGGER_WORDS.some(t => text.includes(t));
+        const hasTrigger = TRIGGER_REGEX.test(text);
 
         if (this.state === STATE.PASSIVE) {
             if (hasTrigger) {
-                // Strip the trigger word and check if a command follows in same utterance
                 const commandPart = this._stripTrigger(text);
-                console.log(chalk.bold.yellow('\n🔔 Trigger word detected!'));
+                console.log(chalk.bold.yellow(`\n🔔 Trigger detected in: "${text}"`));
                 this._enterActive(commandPart);
             } else {
-                // Silently ignore — no trigger, no noise in logs
                 process.stdout.write(chalk.gray(`[Passive] Ignored: "${text}"\r`));
             }
         } else if (this.state === STATE.ACTIVE) {
@@ -207,41 +206,185 @@ class SpeechService {
     // ─── Command Parsing ──────────────────────────────────────────────────────
 
     _stripTrigger(text) {
-        // Remove trigger word and any leading punctuation/spaces
-        let result = text;
-        for (const t of TRIGGER_WORDS) {
-            result = result.replace(t, '');
+        // Remove the trigger match and any leading punctuation/spaces
+        return text.replace(TRIGGER_REGEX, '').replace(/^[\s,.:;]+/, '').trim();
+    }
+
+    // Strip punctuation from a single token
+    _stripPunct(word) {
+        return word.replace(/[.,!?;:'"()\[\]{}\-]+/g, '').trim();
+    }
+
+    // Known Turkish number words ordered longest-first (for compound splitting)
+    get _numberParts() {
+        return [
+            'doksan', 'seksen', 'yetmiş', 'altmış', 'elli', 'kırk', 'otuz', 'yirmi',
+            'sıfır', 'sekiz', 'yedi', 'dört', 'beş', 'altı', 'üç', 'iki',
+            'dokuz', 'bin', 'yüz', 'bir', 'on'
+        ];
+    }
+
+    // Numeric values of each number word (for arithmetic mode)
+    get _numberValues() {
+        return {
+            'sıfır': 0, 'bir': 1, 'iki': 2, 'üç': 3, 'dört': 4,
+            'beş': 5, 'altı': 6, 'yedi': 7, 'sekiz': 8, 'dokuz': 9,
+            'on': 10, 'yirmi': 20, 'otuz': 30, 'kırk': 40, 'elli': 50,
+            'altmış': 60, 'yetmiş': 70, 'seksen': 80, 'doksan': 90,
+            'yüz': 100, 'bin': 1000
+        };
+    }
+
+    // Single digit map for digit-by-digit mode
+    get _singleDigits() {
+        return {
+            'sıfır': '0', 'bir': '1', 'iki': '2', 'üç': '3', 'dört': '4',
+            'beş': '5', 'altı': '6', 'yedi': '7', 'sekiz': '8', 'dokuz': '9'
+        };
+    }
+
+    // Try to split a compound Turkish number word like "yüzaltı" → ["yüz", "altı"]
+    _splitCompoundNumber(word) {
+        const parts = this._numberParts;
+        const result = [];
+        let remaining = word;
+
+        while (remaining.length > 0) {
+            let matched = false;
+            for (const part of parts) {
+                if (remaining.startsWith(part)) {
+                    result.push(part);
+                    remaining = remaining.slice(part.length);
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return null; // Not a pure compound number word
         }
-        return result.replace(/^[\s,.:;]+/, '').trim();
+        return result.length > 1 ? result : null;
+    }
+
+    // Convert a sequence of Turkish number word tokens to a digit string.
+    // Handles arithmetic mode ("yüz altı" → "106") and
+    // digit-by-digit mode ("bir sıfır altı" → "106")
+    _numberSequenceToString(tokens) {
+        const values = this._numberValues;
+        const singles = this._singleDigits;
+
+        // Detect digit-by-digit mode:
+        // 1. Contains "sıfır" (zero only appears when spelling digits)
+        // 2. OR all tokens are single-digit words (no tens/hundreds/thousands)
+        const allAreSingleDigit = tokens.every(t => singles[t] !== undefined);
+        const hasSifir = tokens.includes('sıfır');
+        const isDigitByDigit = hasSifir || (allAreSingleDigit && tokens.length > 1);
+
+        if (isDigitByDigit) {
+            return tokens.map(t => singles[t] !== undefined ? singles[t] : '?').join('');
+        }
+
+        // Arithmetic mode — accumulate with standard Turkish number rules
+        // Turkish: "iki yüz on beş" = 2*100 + 10 + 5 = 215
+        let total = 0;
+        let pending = 0; // digits gathered before a multiplier (yüz, bin)
+
+        for (const token of tokens) {
+            const val = values[token];
+            if (val === undefined) continue;
+
+            if (val === 1000) {
+                const coeff = pending > 0 ? pending : 1;
+                total += coeff * 1000;
+                pending = 0;
+            } else if (val === 100) {
+                const coeff = pending > 0 ? pending : 1;
+                total += coeff * 100;
+                pending = 0;
+            } else {
+                pending += val;
+            }
+        }
+
+        total += pending;
+        return String(total);
+    }
+
+    // Main text processor: strip punct, expand compounds, replace number sequences
+    _processText(rawText) {
+        // 1. Basic cleanup — lowercase, remove stray punctuation except hyphens between digits
+        const cleaned = rawText.toLowerCase().replace(/([^\d])-([^\d])/g, '$1 $2');
+
+        // 2. Split into tokens and strip punctuation from each
+        const rawTokens = cleaned.split(/\s+/).map(t => this._stripPunct(t)).filter(Boolean);
+
+        // 3. Expand compound number words (e.g. "yüzaltı" → "yüz", "altı")
+        const tokens = [];
+        for (const token of rawTokens) {
+            const expanded = this._splitCompoundNumber(token);
+            if (expanded) {
+                tokens.push(...expanded);
+            } else {
+                tokens.push(token);
+            }
+        }
+
+        // 4. Replace consecutive number-word runs with their digit equivalents
+        const values = this._numberValues;
+        const output = [];
+        let numRun = [];
+
+        const flushNumRun = () => {
+            if (numRun.length > 0) {
+                output.push(this._numberSequenceToString(numRun));
+                numRun = [];
+            }
+        };
+
+        for (const token of tokens) {
+            if (values[token] !== undefined) {
+                numRun.push(token);
+            } else {
+                flushNumRun();
+                output.push(token);
+            }
+        }
+        flushNumRun();
+
+        return output;
     }
 
     _tryParseCommand(text) {
-        const rawWords = text.trim().split(/\s+/);
-        const words = rawWords.map(w => {
-            if (this.numberMap[w]) return this.numberMap[w];
-            if (this.alphaMap[w]) return this.alphaMap[w];
-            return w;
-        });
+        // Preprocess: strip punct, expand compounds, convert number words → digits
+        const tokens = this._processText(text);
+
+        if (process.env.DEBUG_TOKENS) {
+            console.log(chalk.gray(`[Tokens]: ${JSON.stringify(tokens)}`));
+        }
+
+        // Apply alpha prefix map
+        const words = tokens.map(w => this.alphaMap[w] || w);
 
         const commandGroups = [];
         let currentIds = [];
 
         for (const word of words) {
-            if (this.variations.prepared.some(v => word.includes(v))) {
+            const wordClean = word.toLowerCase();
+
+            if (this.variations.prepared.some(v => wordClean.includes(v))) {
                 if (currentIds.length > 0) {
                     commandGroups.push({ ids: [...currentIds], status: this.statusCodes.prepared });
                     currentIds = [];
                 }
-            } else if (this.variations.delivered.some(v => word.includes(v))) {
+            } else if (this.variations.delivered.some(v => wordClean.includes(v))) {
                 if (currentIds.length > 0) {
                     commandGroups.push({ ids: [...currentIds], status: this.statusCodes.delivered });
                     currentIds = [];
                 }
             } else {
-                const numMatch = word.match(/\d+/);
-                if (numMatch) {
-                    currentIds.push(numMatch[0]);
-                } else if (word.length === 1 && /[A-Z]/i.test(word)) {
+                // Digit string produced by number conversion, or raw numeric literal
+                if (/^\d+$/.test(word)) {
+                    currentIds.push(word);
+                // Only accept a single letter if it's an explicit alpha prefix (A, B, C, D...)
+                } else if (word.length === 1 && this.alphaMap && Object.values(this.alphaMap).includes(word.toUpperCase())) {
                     currentIds.push(word.toUpperCase());
                 }
             }
@@ -249,7 +392,6 @@ class SpeechService {
 
         if (commandGroups.length === 0) return false;
 
-        // We have groups — dispatch callbacks
         commandGroups.forEach(group => {
             group.ids.forEach(id => this.updateCallback(id, group.status));
         });
