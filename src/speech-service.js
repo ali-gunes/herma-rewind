@@ -107,8 +107,8 @@ class SpeechService {
         // Windows RDP specific fixes
         if (os.platform() === 'win32') {
             recordOptions.recordProgram = 'sox';
-            // Enable verbose if we still get errors to see the exact sox command
-            // recordOptions.verbose = true;
+            // Enable verbose to see the exact sox command
+            recordOptions.verbose = true;
         }
 
         this.recording = record.record(recordOptions);
