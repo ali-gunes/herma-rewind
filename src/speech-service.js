@@ -98,11 +98,20 @@ class SpeechService {
     start() {
         this._enterPassive();
 
-        this.recording = record.record({
+        const recordOptions = {
             sampleRate: this.sampleRate,
             channels: 1,
             audioType: 'raw',
-        });
+        };
+
+        // Windows RDP specific fixes
+        if (os.platform() === 'win32') {
+            recordOptions.recordProgram = 'sox';
+            // Enable verbose if we still get errors to see the exact sox command
+            // recordOptions.verbose = true;
+        }
+
+        this.recording = record.record(recordOptions);
 
         this.recording.stream().on('data', (chunk) => {
             const int16 = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
@@ -125,9 +134,16 @@ class SpeechService {
             }
         });
 
-        this.recording.stream().on('error', (err) =>
-            console.error(chalk.red('[Mic Error]:'), err.message)
-        );
+        this.recording.stream().on('error', (err) => {
+            console.error(chalk.bold.red('\n[Mic Error]:'), err.message || err);
+            
+            if (os.platform() === 'win32') {
+                console.log(chalk.yellow('💡 Windows/RDP Troubleshooting:'));
+                console.log(chalk.gray('   - Check RDP: Local Resources > Remote Audio > "Record from this computer"'));
+                console.log(chalk.gray('   - Ensure SoX is installed and in PATH (try: choco install sox.portable)'));
+                console.log(chalk.gray('   - Verify "Remote Audio" is set as default recording device.'));
+            }
+        });
     }
 
     stop() {
