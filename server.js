@@ -2,27 +2,16 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const path = require('path');
+const chalk = require('chalk');
+const SpeechService = require('./src/speech-service');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Global Request Logger
-app.use((req, res, next) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] ${req.method} ${req.url}`);
-    if (req.body && Object.keys(req.body).length > 0) {
-        console.log(`[Payload]:`, JSON.stringify(req.body, null, 2));
-    }
-    next();
-});
-
-// In-memory data structure
-// { orderId: { id, status, statusCode, createdAt, updatedAt } }
+// In-memory data store
 let orders = {};
 
 const STATUS_MAP = {
@@ -31,100 +20,88 @@ const STATUS_MAP = {
     [process.env.STATUS_DELIVERED || 40]: 'Teslim Edildi'
 };
 
-// Healthcheck
-app.get('/health', (req, res) => {
-    res.json({ isHealthy: true });
-});
+// --- LOGIC FUNCTIONS ---
 
-// Order Ingest
+async function updateOrderLocally(id, statusCode) {
+    // Fuzzy match logic
+    let targetOrder = orders[id];
+
+    // 1. Exact match failed? Try case-insensitive and numeric-only match
+    if (!targetOrder) {
+        const spokenIdClean = id.toUpperCase().replace('-', '');
+        targetOrder = Object.values(orders).find(o => {
+            const oIdClean = o.id.toUpperCase().replace('-', '');
+            // Match if cleaned IDs are same OR if the spoken numeric part is in the order ID
+            const numericPart = id.match(/\d+/);
+            if (oIdClean === spokenIdClean) return true;
+            if (numericPart && o.id.includes(numericPart[0])) return true;
+            return false;
+        });
+    }
+
+    if (!targetOrder) {
+        console.log(chalk.red(`[Error]: Match found for ID "${id}", but order not found in system.`));
+        speechService.speak("Anlayamadım");
+        return;
+    }
+
+    const orderId = targetOrder.id;
+    const now = Date.now();
+    orders[orderId].statusCode = statusCode;
+    orders[orderId].status = STATUS_MAP[statusCode] || 'Bilinmiyor';
+    orders[orderId].updatedAt = now;
+
+    console.log(chalk.green(`\n✅ [Action]: Order ${orderId} updated to ${orders[orderId].status} (${statusCode})`));
+    speechService.speak(`Sipariş ${orderId} ${orders[orderId].status}`);
+
+    // Call external API if configured
+    if (process.env.UPDATE_STATUS_BASE_URL) {
+        try {
+            const externalUrl = `${process.env.UPDATE_STATUS_BASE_URL}/update-status`;
+            const payload = { status: statusCode, kdsOrderId: orderId };
+            await axios.post(externalUrl, payload);
+        } catch (err) {
+            console.error(chalk.red(`[External Alert]: Failed to update external KDS: ${err.message}`));
+        }
+    }
+}
+
+// --- SPEECH SERVICE ---
+
+const speechService = new SpeechService(updateOrderLocally);
+speechService.init();
+
+// --- API ROUTES (Headless Ingestion) ---
+
 app.post('/api/orders/ingest', (req, res) => {
     const { kdsOrderId, orderId } = req.body;
     const id = kdsOrderId || orderId;
 
-    if (!id) {
-        return res.status(400).json({ success: false, error: 'Order ID is required' });
-    }
+    if (!id) return res.status(400).json({ success: false, error: 'Order ID required' });
 
-    const now = Date.now();
     const statusCode = parseInt(process.env.STATUS_PREPARING) || 20;
-
-    const newOrder = {
+    orders[id] = {
         id: id,
         status: STATUS_MAP[statusCode],
         statusCode: statusCode,
-        createdAt: now,
-        updatedAt: now,
-        timeStamp: now
+        createdAt: Date.now(),
+        updatedAt: Date.now()
     };
 
-    orders[id] = newOrder;
-
-    console.log(`[Order Ingest] New order: ${id} with status ${newOrder.status}`);
-
-    res.json({
-        success: true,
-        order: newOrder
-    });
-});
-
-// Update Status (matches the speech-to-text logic requirement)
-app.post('/api/orders/update-local', async (req, res) => {
-    const { id, statusCode } = req.body;
-
-    if (!orders[id]) {
-        return res.status(404).json({ success: false, error: 'Order not found' });
-    }
-
-    const now = Date.now();
-    orders[id].statusCode = statusCode;
-    orders[id].status = STATUS_MAP[statusCode] || 'Bilinmiyor';
-    orders[id].updatedAt = now;
-
-    console.log(`[Order Update] Order: ${id} updated to status ${orders[id].status} (${statusCode})`);
-
-    // Call the external update-status service
-    try {
-        const externalUrl = `${process.env.UPDATE_STATUS_BASE_URL}/update-status`;
-        console.log(`[External Update] Calling ${externalUrl} for order ${id}`);
-
-        const payload = {
-            status: statusCode,
-            kdsOrderId: id
-        };
-
-        console.log(`[External Update] Calling ${externalUrl} with payload:`, JSON.stringify(payload, null, 2));
-
-        // The requirement says: {"status": 30, "kdsOrderId":"A-123"}
-        await axios.post(externalUrl, payload);
-        console.log(`[External Update] Success for order ${id}`);
-    } catch (error) {
-        console.error(`[External Update] Failed for order ${id}:`, error.message);
-        // We still return success: true for the local update even if external fails, 
-        // as per typical local-first UI behavior, but we logged the error.
-    }
-
+    console.log(chalk.magenta(`\n📥 [Ingest]: New order received: ${id}`));
     res.json({ success: true, order: orders[id] });
 });
 
-// Toggle listening endpoint (for frontend to signal state change)
-let isListening = false;
-app.post('/api/listen/toggle', (req, res) => {
-    isListening = !isListening;
-    console.log(`[Listen Toggle] State changed to: ${isListening ? 'LISTENING' : 'IDLE'}`);
-    res.json({ isListening });
-});
+app.get('/api/orders', (req, res) => res.json(Object.values(orders)));
 
-// Mock external update-status service for testing if needed
-app.post('/update-status', (req, res) => {
-    console.log('[Mock External API] Received update:', req.body);
-    res.json({ success: true });
-});
+// --- STARTUP ---
 
-// Get all orders
-app.get('/api/orders', (req, res) => {
-    res.json(Object.values(orders));
-});
+console.clear();
+console.log(chalk.bold.cyan('========================================'));
+console.log(chalk.bold.cyan('   HERMA REWIND - OFFLINE VOICE CLI    '));
+console.log(chalk.bold.cyan('========================================'));
 
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+    console.log(chalk.gray(`📡 REST Ingest API active on port ${PORT}`));
+    speechService.start();
 });

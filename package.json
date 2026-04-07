@@ -20,8 +20,12 @@
   "description": "",
   "dependencies": {
     "axios": "^1.13.5",
+    "chalk": "^4.1.2",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "node-record-lpcm16": "^1.0.1",
+    "say": "^0.16.0",
+    "sherpa-onnx": "^1.12.35"
   }
 }
