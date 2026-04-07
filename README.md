@@ -1,43 +1,141 @@
-# Herma Rewind - Offline Voice Order Management
+# Herma Rewind — Offline Voice Order Management
 
-An offline, browser-independent voice recognition system for managing kitchen orders.
+An offline, browser-independent voice recognition system for managing kitchen display orders. Uses **Sherpa-ONNX** (Whisper Tiny) for Turkish speech-to-text — no internet required after setup.
 
-## Features
-- **100% Offline**: Uses Sherpa-ONNX and Whisper for Speech-to-Text.
-- **Turkish Support**: Optimized for Turkish commands like "A-123 Hazır" or "Bursa 45 Teslim edildi".
-- **CLI-Only**: Runs in your terminal with detailed logs and system speaker feedback.
-- **REST API**: Still supports order ingestion via `/api/orders/ingest`.
+## How It Works
 
-## Setup
+1. The server listens passively on your microphone.
+2. Say **"Sipariş"** — a chime plays and it enters active listening.
+3. Say the order command — **"106 Hazır"** or **"A-105 Teslim Edildi"**.
+4. The system matches the order, updates its status, calls the external KDS API, and speaks a confirmation.
 
-### 1. External Dependencies
+---
 
-#### Mac
+## Setup — macOS
+
+### 1. Install SoX (microphone driver)
 ```bash
 brew install sox
 ```
 
-#### Windows
-1. Download SoX from [SourceForge](https://sourceforge.net/projects/sox/files/sox/).
-2. Extract the zip file (e.g., to `C:\sox`).
-3. Add the folder path to your system `PATH` environment variable.
-4. (Optional) Install a Turkish voice pack in Windows Settings for better Text-to-Speech.
-
-### 2. Project Installation
+### 2. Install dependencies & download models
 ```bash
 npm install
 bash setup-models.sh
 ```
 
-### 3. Run
+### 3. Configure environment
+Copy `.env.example` to `.env` and fill in your KDS endpoint:
+```
+UPDATE_STATUS_BASE_URL=https://your-kds-api.com
+PORT=3000
+STATUS_PREPARING=20
+STATUS_PREPARED=30
+STATUS_DELIVERED=40
+```
+
+### 4. Run
 ```bash
 node server.js
 ```
 
-## Voice Commands
-- **Prepared**: "hazır", "hazırlandı", "tamam", "ok"
-- **Delivered**: "teslim", "edildi", "teslimedildi", "gönderildi", "çıktı"
+---
 
-Examples:
-- "A yüz on yedi hazırlandı" -> Updates Order A-117 to 'Hazır'
-- "Bursa otuz iki teslim edildi" -> Updates Order B-32 to 'Teslim Edildi'
+## Setup — Windows
+
+### Step 1 — Install Node.js
+Download and install from https://nodejs.org (LTS version recommended, v18+).
+
+### Step 2 — Install SoX (microphone driver)
+
+1. Go to https://sourceforge.net/projects/sox/files/sox/
+2. Download the latest `.zip` file (e.g. `sox-14.4.2-win32.zip`)
+3. Extract it to a permanent location, e.g. `C:\sox`
+4. Add SoX to your `PATH`:
+   - Press `Win + S` → search **"Environment Variables"**
+   - Click **"Edit the system environment variables"**
+   - Click **"Environment Variables..."**
+   - Under **"System variables"**, find and select **Path**, click **Edit**
+   - Click **New**, type `C:\sox` (or wherever you extracted it)
+   - Click **OK** on all dialogs
+5. Open a **new** Command Prompt and verify:
+   ```cmd
+   sox --version
+   ```
+   You should see something like `SoX v14.4.2`.
+
+### Step 3 — Install dependencies
+Open Command Prompt or PowerShell in the project folder:
+```cmd
+npm install
+```
+
+### Step 4 — Download the speech models
+Run the setup script using Git Bash (comes with Git for Windows):
+```bash
+bash setup-models.sh
+```
+
+Or manually download and place the files:
+
+| File | URL |
+|------|-----|
+| `tiny-encoder.int8.onnx` | https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2 |
+| `tiny-decoder.int8.onnx` | (same archive) |
+| `tiny-tokens.txt` | (same archive) |
+| `silero_vad.onnx` | https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx |
+
+Extract the archive and place all files in a `whisper-tiny/` folder in the project root.
+
+### Step 5 — Configure `.env`
+Create a `.env` file in the project root:
+```
+UPDATE_STATUS_BASE_URL=https://your-kds-api.com
+PORT=3000
+STATUS_PREPARING=20
+STATUS_PREPARED=30
+STATUS_DELIVERED=40
+```
+
+### Step 6 — Run
+```cmd
+node server.js
+```
+
+### Step 7 — (Optional) Turkish Text-to-Speech on Windows
+The app will speak order confirmations. For Turkish voice:
+1. Open **Settings → Time & Language → Speech**
+2. Under **"Manage voices"**, add **Turkish**
+3. Restart the app
+
+If no Turkish voice is installed, the app will speak in the system default language but will still function correctly.
+
+### Windows Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `sox: command not found` | SoX not in PATH — re-check Step 2 |
+| `Error: spawn rec ENOENT` | SoX not installed or not in PATH |
+| No microphone input | Check Windows microphone privacy settings: Settings → Privacy → Microphone |
+| Push to GitHub fails | Model files are excluded via `.gitignore` — run `bash setup-models.sh` on each new machine |
+
+---
+
+## Voice Commands
+
+| Say | Meaning |
+|-----|---------|
+| "Sipariş 106 hazır" | Mark order 106 as Ready |
+| "Sipariş A-105 teslim edildi" | Mark order A-105 as Delivered |
+| "Sipariş yüz altı hazır" | Also matches order 106 (number words) |
+| "Sipariş bir sıfır altı hazır" | Also matches order 106 (digit-by-digit) |
+| "Sipariş yüzaltı teslim" | Also matches order 106 (compound word) |
+
+**Trigger variations recognized:** sipariş, siparis, siparış, pariş, parış, paris, paraş (and more — uses fuzzy regex matching).
+
+## REST API
+
+| Method | Endpoint | Body | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/orders/ingest` | `{ "kdsOrderId": "106" }` | Register a new order |
+| `GET` | `/api/orders` | — | List all current orders |

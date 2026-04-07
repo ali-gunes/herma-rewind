@@ -1,3 +1,12 @@
 node_modules
 .DS_Store
 package-lock.json
+.env
+
+# Model files — too large for GitHub, run setup-models.sh to download
+whisper-tiny/
+model-tr/
+
+# Test scratch files
+test-numbers.js
+test-trigger.js
